@@ -628,17 +628,21 @@ static void
 iface_refresh_stats(struct iface *iface)
 {
     /* This function is copied from bridge.c */
-#define IFACE_STATS                             \
-    IFACE_STAT(rx_packets,      "rx_packets")   \
-    IFACE_STAT(tx_packets,      "tx_packets")   \
-    IFACE_STAT(rx_bytes,        "rx_bytes")     \
-    IFACE_STAT(tx_bytes,        "tx_bytes")     \
-    IFACE_STAT(rx_dropped,      "rx_dropped")   \
-    IFACE_STAT(tx_dropped,      "tx_dropped")   \
-    IFACE_STAT(rx_errors,       "rx_errors")    \
-    IFACE_STAT(tx_errors,       "tx_errors")    \
-    IFACE_STAT(rx_crc_errors,   "rx_crc_err")   \
-    IFACE_STAT(collisions,      "collisions")
+#define IFACE_STATS                                     \
+    IFACE_STAT(rx_packets,              "rx_packets")   \
+    IFACE_STAT(tx_packets,              "tx_packets")   \
+    IFACE_STAT(rx_bytes,                "rx_bytes")     \
+    IFACE_STAT(tx_bytes,                "tx_bytes")     \
+    IFACE_STAT(rx_dropped,              "rx_dropped")   \
+    IFACE_STAT(tx_dropped,              "tx_dropped")   \
+    IFACE_STAT(rx_errors,               "rx_errors")    \
+    IFACE_STAT(tx_errors,               "tx_errors")    \
+    IFACE_STAT(rx_crc_errors,           "rx_crc_err")   \
+    IFACE_STAT(collisions,              "collisions")   \
+    IFACE_STAT(sflow_ingress_packets,   "sflow_ingress_packets") \
+    IFACE_STAT(sflow_ingress_bytes,     "sflow_ingress_bytes") \
+    IFACE_STAT(sflow_egress_packets,    "sflow_egress_packets") \
+    IFACE_STAT(sflow_egress_bytes,      "sflow_egress_bytes")
 
 #define IFACE_STAT(MEMBER, NAME) + 1
     enum { N_IFACE_STATS = IFACE_STATS };
