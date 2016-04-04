@@ -58,7 +58,9 @@ set (HEADERS asic-plugin.h
              reconfigure-blocks.h
              run-blocks.h
              plugin-extensions.h
-             plugins.h)
+             plugins.h
+             qos-asic-provider.h
+             )
 
 # Rules to build switchd
 add_library (${LIB_PLUGINS} SHARED ${SOURCES})
