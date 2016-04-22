@@ -1507,10 +1507,12 @@ bridge_add_ports(struct bridge *br, const struct shash *wanted_ports)
 static inline int cmd_str2int(const char *s)
 {
     int i;
+    errno = 0;
     i = (s[1] == 'x' || s[1] == 'X') ?
         strtol(&s[2], NULL, 16) : strtol(s,NULL,10);
     if(errno) {
-       return -1;
+        VLOG_ERR("errno %s", strerror(errno));
+        return -1;
     }
     return i;
 }
@@ -1593,6 +1595,7 @@ port_configure(struct port *port)
     struct ofproto_bundle_settings s;
     struct iface *iface;
 #ifdef OPS
+    memset(&s, 0, sizeof s);
     int prev_bond_handle = port->bond_hw_handle;
     int cfg_slave_count;
     bool lacp_enabled = false;
