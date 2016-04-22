@@ -108,8 +108,13 @@ main(int argc, char *argv[])
     }
     unixctl_command_register("exit", "", 0, 0, ovs_vswitchd_exit, &exiting);
 
-    bridge_init(remote);
+    /*
+     * plugins_init MUST be called PRIOR to bridge_init.  plugins_init loads
+     * all plugins, the calls their init() functions.  These init() functions
+     * may, in turn, want to register for BLK_BR_INIT callback.
+    */
     plugins_init(plugins_path);
+    bridge_init(remote);
 
 #ifdef OPS
     plugins_netdev_register();
