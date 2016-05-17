@@ -1430,8 +1430,8 @@ bridge_delete_or_reconfigure_ports(struct bridge *br)
 
 #ifdef OPS
 static void
-vrf_delete_or_reconfigure_subintf(struct smap *sub_intf_info,
-                                  const struct ovsrec_interface *iface_cfg)
+get_subinterface_info(struct smap *sub_intf_info,
+                      const struct ovsrec_interface *iface_cfg)
 {
     const struct ovsrec_interface *parent_intf_cfg = NULL;
     int sub_intf_vlan = 0;
@@ -1501,7 +1501,7 @@ vrf_delete_or_reconfigure_ports(struct vrf *vrf)
 #ifdef OPS
         if (!strcmp(iface->cfg->type, OVSREC_INTERFACE_TYPE_VLANSUBINT)) {
            smap_init(&sub_intf_info);
-           vrf_delete_or_reconfigure_subintf(&sub_intf_info, iface->cfg);
+           get_subinterface_info(&sub_intf_info, iface->cfg);
            ret = netdev_set_config(iface->netdev, &sub_intf_info, NULL);
            smap_destroy(&sub_intf_info);
            if (ret)
@@ -2717,7 +2717,23 @@ static int
 iface_set_netdev_config(const struct ovsrec_interface *iface_cfg,
                         struct netdev *netdev, char **errp)
 {
+#ifdef OPS
+    int ret = 0;
+    struct smap sub_intf_info;
+
+    if (!strcmp(iface_cfg->type, OVSREC_INTERFACE_TYPE_VLANSUBINT)) {
+        smap_init(&sub_intf_info);
+        get_subinterface_info(&sub_intf_info, iface_cfg);
+        ret = netdev_set_config(netdev, &sub_intf_info, NULL);
+        smap_destroy(&sub_intf_info);
+    } else  {
+        ret =  netdev_set_config(netdev, &iface_cfg->options, errp);
+    }
+
+    return ret;
+#else
     return netdev_set_config(netdev, &iface_cfg->options, errp);
+#endif
 }
 
 /* Opens a network device for 'if_cfg' and configures it.  Adds the network
@@ -2736,10 +2752,6 @@ iface_do_create(const struct bridge *br,
                 char **errp)
 {
     struct netdev *netdev = NULL;
-#ifdef OPS
-    struct smap sub_intf_info;
-    int ret = 0;
-#endif
     int error;
 
     if (netdev_is_reserved_name(iface_cfg->name)) {
@@ -2773,21 +2785,12 @@ iface_do_create(const struct bridge *br,
     if (error) {
         goto error;
     }
-
-    if (!strcmp(iface_cfg->type, OVSREC_INTERFACE_TYPE_VLANSUBINT)) {
-          smap_init(&sub_intf_info);
-          vrf_delete_or_reconfigure_subintf(&sub_intf_info, iface_cfg);
-          smap_destroy(&sub_intf_info);
-          if (ret) {
-              goto error;
-          }
-    } else {
-        error = iface_set_netdev_config(iface_cfg, netdev, errp);
-        if (error) {
-            goto error;
-        }
-    }
 #endif
+    error = iface_set_netdev_config(iface_cfg, netdev, errp);
+    if (error) {
+         goto error;
+    }
+
     *ofp_portp = iface_pick_ofport(iface_cfg);
     error = ofproto_port_add(br->ofproto, netdev, ofp_portp);
     if (error) {
@@ -3215,18 +3218,6 @@ iface_refresh_netdev_status(struct iface *iface)
     if (!iface->type
         || (!strcmp(iface->type, OVSREC_INTERFACE_TYPE_SYSTEM))
         || (!strcmp(iface->type, OVSREC_INTERFACE_TYPE_LOOPBACK))) {
-        return;
-    } else if (!iface->type
-               || (!strcmp(iface->type, OVSREC_INTERFACE_TYPE_VLANSUBINT))) {
-        error = netdev_get_flags(iface->netdev, &flags);
-        if (!error) {
-            const char *state = flags & NETDEV_UP
-                                ? OVSREC_INTERFACE_LINK_STATE_UP
-                                : OVSREC_INTERFACE_LINK_STATE_DOWN;
-            ovsrec_interface_set_admin_state(iface->cfg, state);
-        } else {
-            ovsrec_interface_set_admin_state(iface->cfg, NULL);
-        }
         return;
     }
 #endif
