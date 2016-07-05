@@ -76,6 +76,25 @@ struct port {
 #endif
 };
 
+struct iface {
+    /* These members are always valid.
+     *
+     * They are immutable: they never change between iface_create() and
+     * iface_destroy(). */
+    struct ovs_list port_elem;  /* Element in struct port's "ifaces" list. */
+    struct hmap_node name_node; /* In struct bridge's "iface_by_name" hmap. */
+    struct hmap_node ofp_port_node; /* In struct bridge's "ifaces" hmap. */
+    struct port *port;          /* Containing port. */
+    char *name;                 /* Host network device name. */
+    struct netdev *netdev;      /* Network device. */
+    ofp_port_t ofp_port;        /* OpenFlow port number. */
+    uint64_t change_seq;
+
+    /* These members are valid only within bridge_reconfigure(). */
+    const char *type;           /* Usually same as cfg->type. */
+    const struct ovsrec_interface *cfg;
+};
+
 #ifdef OPS
 struct vlan {
     struct hmap_node hmap_node;  /* In struct bridge's "vlans" hmap. */

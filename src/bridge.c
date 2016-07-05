@@ -83,25 +83,6 @@ VLOG_DEFINE_THIS_MODULE(bridge);
 
 COVERAGE_DEFINE(bridge_reconfigure);
 
-struct iface {
-    /* These members are always valid.
-     *
-     * They are immutable: they never change between iface_create() and
-     * iface_destroy(). */
-    struct ovs_list port_elem;  /* Element in struct port's "ifaces" list. */
-    struct hmap_node name_node; /* In struct bridge's "iface_by_name" hmap. */
-    struct hmap_node ofp_port_node; /* In struct bridge's "ifaces" hmap. */
-    struct port *port;          /* Containing port. */
-    char *name;                 /* Host network device name. */
-    struct netdev *netdev;      /* Network device. */
-    ofp_port_t ofp_port;        /* OpenFlow port number. */
-    uint64_t change_seq;
-
-    /* These members are valid only within bridge_reconfigure(). */
-    const char *type;           /* Usually same as cfg->type. */
-    const struct ovsrec_interface *cfg;
-};
-
 struct mirror {
     struct uuid uuid;           /* UUID of this "mirror" record in database. */
     struct hmap_node hmap_node; /* In struct bridge's "mirrors" hmap. */
