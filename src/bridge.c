@@ -2774,6 +2774,7 @@ iface_do_create(const struct bridge *br,
                 struct netdev **netdevp,
                 char **errp)
 {
+    struct smap hw_intf_info;
     struct netdev *netdev = NULL;
     int error;
 
@@ -2803,11 +2804,25 @@ iface_do_create(const struct bridge *br,
         goto error;
     }
 
-    error = netdev_set_hw_intf_info(netdev, &(iface_cfg->hw_intf_info));
+    /* Copy the iface->hw_intf_info to a local smap. */
+    smap_clone(&hw_intf_info, &(iface_cfg->hw_intf_info));
+
+    /* Check if the interface is a split child of another port. */
+    if (iface_cfg->split_parent != NULL) {
+        smap_add(&hw_intf_info,
+                 INTERFACE_HW_INTF_INFO_SPLIT_PARENT,
+                 iface_cfg->split_parent->name);
+    }
+
+    error = netdev_set_hw_intf_info(netdev, &hw_intf_info);
 
     if (error) {
+        smap_destroy(&hw_intf_info);
         goto error;
     }
+
+    smap_destroy(&hw_intf_info);
+
 #endif
     error = iface_set_netdev_config(iface_cfg, netdev, errp);
     if (error) {
