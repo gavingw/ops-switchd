@@ -6820,6 +6820,7 @@ neighbor_create(struct vrf *vrf,
     struct neighbor *neighbor;
     int rc = 0;
     char ipv6_dest_addr[sizeof(struct in6_addr)];
+    struct ether_addr *ether_mac = NULL;
 
     VLOG_DBG("In neighbor_create for neighbor %s",
               idl_neighbor->ip_address);
@@ -6829,7 +6830,7 @@ neighbor_create(struct vrf *vrf,
     neighbor->ip_address = xstrdup(idl_neighbor->ip_address);
     ovs_assert(neighbor->ip_address);
 
-    if (idl_neighbor->mac) {
+    if ((idl_neighbor->mac) && (strlen(idl_neighbor->mac))) {
         neighbor->mac = xstrdup(idl_neighbor->mac);
         ovs_assert(neighbor->mac);
     }
@@ -6844,7 +6845,7 @@ neighbor_create(struct vrf *vrf,
         neighbor->is_ipv6_addr = true;
     }
 
-    if (idl_neighbor->port) {
+    if ((idl_neighbor->port) && (strlen(idl_neighbor->port->name))) {
         neighbor->port_name = xstrdup(idl_neighbor->port->name);
         ovs_assert(neighbor->port_name);
     }
@@ -6857,11 +6858,16 @@ neighbor_create(struct vrf *vrf,
                 hash_string(neighbor->ip_address, 0));
     VLOG_DBG("Added neighbor to hash");
 
-    if (idl_neighbor->mac && strlen(idl_neighbor->mac) > 0) {
-        /* Add ofproto/asic neighbors */
-        rc = neighbor_set_l3_host_entry(vrf, neighbor);
-        if (!rc) {
-            vrf_ofproto_update_route_with_neighbor(vrf, neighbor, true);
+
+    /*Adding new neighbor to asic */
+    if((neighbor->mac) && (neighbor->port_name)) {
+        ether_mac = ether_aton(neighbor->mac);
+        if ((ether_mac != NULL) ) {
+            rc = neighbor_set_l3_host_entry(vrf, neighbor);
+            if (!rc) {
+                vrf_ofproto_update_route_with_neighbor(vrf,
+                                                       neighbor, true);
+            }
         }
     }
 }
@@ -6928,7 +6934,7 @@ neighbor_modify(struct neighbor *neighbor,
     }
 
     /* Check if mac got modified */
-    if (idl_neighbor->mac) {
+    if (idl_neighbor->mac && (strlen(idl_neighbor->mac) > 0)) {
         /* If updating for first time */
         if ( !(neighbor->mac) ) {
             VLOG_DBG("Got new neighbor mac");
@@ -6957,6 +6963,8 @@ neighbor_modify(struct neighbor *neighbor,
 
     /* Delete earlier egress/host entry */
     if ( (delete_old) && (neighbor->l3_egress_id != -1) ) {
+        vrf_ofproto_update_route_with_neighbor(neighbor->vrf,
+                                               neighbor, false);
         neighbor_delete_l3_host_entry(neighbor->vrf, neighbor);
     }
 
