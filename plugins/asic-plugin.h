@@ -1,5 +1,5 @@
 
-/* Copyright (C) 2016 Hewlett-Packard Development Company, L.P.
+/* (c) Copyright 2016 Hewlett Packard Enterprise Development LP
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -132,9 +132,6 @@ struct asic_plugin_interface {
     int (*set_logical_switch)(const struct ofproto *ofproto, void *aux,
             enum logical_switch_action action,
             struct logical_switch_node *log_switch);
-
-    /* flush mac's from the MAC table*/
-    int (*l2_addr_flush)(mac_flush_params_t *params);
 };
 
 #endif /*__ASIC_PLUGIN_H__*/

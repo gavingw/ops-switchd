@@ -342,7 +342,6 @@ subsystem_create(const struct ovsrec_subsystem *ss_cfg)
     ss = xzalloc(sizeof *ss);
 
     ss->name = xstrdup(ss_cfg->name);
-    ovs_assert(ss->name);
     ss->cfg = ss_cfg;
 
     hmap_init(&ss->iface_by_name);
