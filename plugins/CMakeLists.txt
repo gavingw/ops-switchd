@@ -63,6 +63,7 @@ set (HEADERS asic-plugin.h
              qos-asic-provider.h
              stats-blocks.h
              copp-asic-provider.h
+             log-switch-asic-provider.h
              )
 
 # Rules to build switchd

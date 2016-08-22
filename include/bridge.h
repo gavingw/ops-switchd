@@ -45,6 +45,9 @@ struct bridge {
     struct hmap ifaces;         /* "struct iface"s indexed by ofp_port. */
     struct hmap iface_by_name;  /* "struct iface"s indexed by name. */
 
+    /* Logical switches. */
+    struct hmap logical_switches; /* "struct logical_switch"s indexed by name*/
+
     /* Port mirroring. */
     struct hmap mirrors;        /* "struct mirror" indexed by UUID. */
 
