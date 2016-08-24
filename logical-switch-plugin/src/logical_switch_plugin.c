@@ -289,7 +289,7 @@ log_switch_callback_bridge_reconfig(struct blk_params *blk_params)
     if (OVSREC_IDL_ANY_TABLE_ROWS_DELETED(logical_switch_row, blk_params->idl_seqno) ||
         OVSREC_IDL_ANY_TABLE_ROWS_MODIFIED(logical_switch_row, blk_params->idl_seqno)) {
         HMAP_FOR_EACH_SAFE (logical_switch, next, node, &blk_params->br->logical_switches) {
-            found = logical_switch_lookup_by_key(
+            found = logical_switch_lookup_by_key_in_shash(
                 &current_idl_logical_switches,
                 blk_params->br->name, logical_switch->tunnel_key);
             if (!found) {
@@ -308,9 +308,9 @@ log_switch_callback_bridge_reconfig(struct blk_params *blk_params)
     if (OVSREC_IDL_ANY_TABLE_ROWS_INSERTED(logical_switch_row, blk_params->idl_seqno) ||
         OVSREC_IDL_ANY_TABLE_ROWS_MODIFIED(logical_switch_row, blk_params->idl_seqno)) {
         OVSREC_LOGICAL_SWITCH_FOR_EACH(logical_switch_row, blk_params->idl) {
-            found = logical_switch_lookup_by_key(&current_idl_logical_switches,
-                                                 blk_params->br->name,
-                                                 logical_switch_row->tunnel_key);
+            found = logical_switch_lookup_by_key_in_hmap(&blk_params->br->logical_switches,
+                                                         blk_params->br->name,
+                                                         logical_switch_row->tunnel_key);
             if (!found) {
                 VLOG_DBG("Found an added logical_switch %s %ld",
                     logical_switch_row->name, logical_switch_row->tunnel_key);
@@ -359,7 +359,7 @@ ofproto_set_logical_switch(const struct ofproto *ofproto, void *aux,
 }
 
 struct logical_switch *
-logical_switch_lookup_by_key(const struct shash *hmap, const char *br_name, const int key)
+logical_switch_lookup_by_key_in_shash(const struct shash *hmap, const char *br_name, const int key)
 {
     struct logical_switch *logical_switch = NULL;
     char hash_str[LSWITCH_HASH_STR_SIZE];
@@ -370,4 +370,22 @@ logical_switch_lookup_by_key(const struct shash *hmap, const char *br_name, cons
     }
 
     return logical_switch;
+}
+
+struct logical_switch *
+logical_switch_lookup_by_key_in_hmap(struct hmap *hmap, const char *br_name, const int key)
+{
+    struct logical_switch *logical_switch = NULL;
+    char hash_str[LSWITCH_HASH_STR_SIZE];
+
+    if((NULL != hmap) && (NULL != br_name)) {
+        logical_switch_hash(hash_str, sizeof(hash_str), br_name, key);
+        HMAP_FOR_EACH_IN_BUCKET(logical_switch, node, hash_string(hash_str, 0), hmap) {
+            if ((logical_switch->tunnel_key == key) &&
+                (strcmp(logical_switch->br->name, br_name) == 0)) {
+                return logical_switch;
+            }
+        }
+    }
+    return NULL;
 }

@@ -88,11 +88,11 @@ ofproto_set_logical_switch(const struct ofproto *ofproto, void *aux,
                            enum logical_switch_action action,
                            struct logical_switch_node *log_switch);
 /*
- * logical_switch_lookup_by_key
+ * logical_switch_lookup_by_key_in_shash
  *
  * Lookup for a specified tunnel key in the Logical Switch table
  *
- * @param hmap                     Logical Switch hash table.
+ * @param shash                    Logical Switch shash table.
  * @param br_name                  bridge name
  * @param key                      tunnel key
  *
@@ -102,6 +102,25 @@ ofproto_set_logical_switch(const struct ofproto *ofproto, void *aux,
  *                                 valid pointer    success
  */
 struct logical_switch *
-logical_switch_lookup_by_key(const struct shash *hmap, const char *br_name, const int key);
+logical_switch_lookup_by_key_in_shash(const struct shash *shash, const char *br_name, const int key);
+
+/*
+ * logical_switch_lookup_by_key_in_hmap
+ *
+ * Lookup for a specified tunnel key in the Logical Switch table
+ *
+ * @param hmap                     Logical Switch hmap table.
+ * @param br_name                  bridge name
+ * @param key                      tunnel key
+ *
+ * @return struct logical_switch   pointer to Logical Switch structure with
+ *                                 lookup result:
+ *                                 NULL             failure
+ *                                 valid pointer    success
+ */
+struct logical_switch *
+logical_switch_lookup_by_key_in_hmap(struct hmap *hmap,
+                                     const char *br_name,
+                                     const int key);
 
 #endif /* LOGICAL_SWITCH_PLUGIN_H */
