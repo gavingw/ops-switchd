@@ -6946,6 +6946,8 @@ neighbor_modify(struct neighbor *neighbor,
 {
     bool add_new = false;
     bool delete_old = false;
+    char *old_port = NULL;
+    char *new_port = NULL;
 
     VLOG_DBG("In neighbor_modify for neighbor %s",
               idl_neighbor->ip_address);
@@ -6963,20 +6965,21 @@ neighbor_modify(struct neighbor *neighbor,
         }
 
         /* If got modified */
+        /* Remember the old port to access ofproto and call host delete */
         if ( (neighbor->port_name) &&
            (strcmp(neighbor->port_name, idl_neighbor->port->name) != 0) ) {
             VLOG_DBG("Neighbor port got modified");
-            free(neighbor->port_name);
-            neighbor->port_name = xstrdup(idl_neighbor->port->name);
+            old_port = neighbor->port_name;
+            new_port= xstrdup(idl_neighbor->port->name);
             delete_old = true;
             add_new = true;
         }
     } else {
         /* If port got removed */
+        /* Remember the old port to access ofproto and call host delete */
         if (neighbor->port_name) {
             VLOG_DBG("Neighbor port got removed");
-            free(neighbor->port_name);
-            neighbor->port_name = NULL;
+            old_port = neighbor->port_name;
             delete_old = true;
         }
     }
@@ -7014,6 +7017,16 @@ neighbor_modify(struct neighbor *neighbor,
         vrf_ofproto_update_route_with_neighbor(neighbor->vrf,
                                                neighbor, false);
         neighbor_delete_l3_host_entry(neighbor->vrf, neighbor);
+    }
+
+    /* Update the port in local hash if got changed */
+    if (old_port) {
+        free(old_port);
+        neighbor->port_name = NULL;
+    }
+
+    if (new_port) {
+        neighbor->port_name = new_port;
     }
 
     /* Configure provider/asic only if valid mac and port */
