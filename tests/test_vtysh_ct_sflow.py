@@ -156,11 +156,11 @@ class sflowConfigTest(OpsVsiTest):
 
         info("### Setting and Verifying specific sflow max-datagram size "
         "###\n")
-        s1.cmdCLI("sflow max-datagram-size 10")
+        s1.cmdCLI("sflow max-datagram-size 1000")
         ret = s1.cmdCLI("do show sflow")
         out = ret.split('\n')
         word_index = out.index('sFlow Configuration ')
-        assert '10' in out[word_index + SHOW_SFLOW_DATAGRAM_SIZE_INDEX],\
+        assert '1000' in out[word_index + SHOW_SFLOW_DATAGRAM_SIZE_INDEX],\
             'Non-default sflow max-datagram size not set'
 
         info("### Unsetting specific max-datagram size set and verifying sflow" \
