@@ -25,9 +25,9 @@
 #ifndef _TUNNEL_VTY_H
 #define _TUNNEL_VTY_H
 
-#define MAX_TUNNEL_LENGTH   15
-#define MAX_INTF_LENGTH     15
-#define MAX_VLAN_LENGTH     15
+#define MAX_TUNNEL_LENGTH       15
+#define MAX_INTF_LENGTH         15
+#define MAX_VLAN_LENGTH         15
 
 void cli_post_init(void);
 void cli_pre_init(void);

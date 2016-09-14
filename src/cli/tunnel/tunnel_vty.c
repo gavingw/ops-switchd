@@ -40,6 +40,7 @@
 #include "tunnel_vty.h"
 #include "memory.h"
 #include "prefix.h"
+#include "sockunion.h"
 #include "openvswitch/vlog.h"
 #include "openswitch-idl.h"
 #include "ovsdb-idl.h"
@@ -53,56 +54,123 @@
 #include "vtysh_ovsdb_tunnel_context.h"
 
 VLOG_DEFINE_THIS_MODULE(vtysh_tunnel_cli);
+
 extern struct ovsdb_idl *idl;
 
 /* Helper functions */
-/*
-ovsrec_logical_switch *get_matching_logical_switch(int64_t tunnel_key)
+
+static bool
+string_is_an_ip_address(const char *string)
 {
-    const struct ovsrec_logical_switch *ls_row = NULL;
-    OVSREC_LOGICAL_SWITCH_FOR_EACH(ls_row, idl)
-    {
-        if (ls_row->tunnel_key == tunnel_key)
-            break;
-    }
-    return ls_row;
+    union sockunion su;
+    return (str2sockunion(string, &su) >= 0);
 }
 
-ovsrec_interface *get_matching_interface(char *tunnel_name)
+char *
+get_source_interface_name(char *intf_name)
+{
+    char *src_intf_name = NULL;
+
+    src_intf_name = xmalloc(MAX_INTF_LENGTH * sizeof(char));
+    memset(src_intf_name, 0, MAX_INTF_LENGTH * sizeof(char));
+    snprintf(src_intf_name, MAX_INTF_LENGTH, "%s%s","loopback", intf_name);
+
+    return src_intf_name;
+}
+
+char *
+get_vlan_name(char *name)
+{
+    char *vlan_name = NULL;
+
+    vlan_name = xmalloc(MAX_VLAN_LENGTH * sizeof(char));
+    memset(vlan_name, 0, MAX_VLAN_LENGTH * sizeof(char));
+    snprintf(vlan_name, MAX_VLAN_LENGTH, "%s%s","VLAN", name);
+
+    return vlan_name;
+}
+
+const struct ovsrec_logical_switch *
+get_logical_switch_by_vni(int64_t vni)
+{
+    const struct ovsrec_logical_switch *ls_row = NULL;
+    bool ls_found = false;
+    OVSREC_LOGICAL_SWITCH_FOR_EACH(ls_row, idl)
+    {
+        if (ls_row->tunnel_key == vni)
+        {
+            ls_found = true;
+            break;
+        }
+    }
+    return (ls_found ? ls_row : NULL);
+}
+
+const struct ovsrec_interface *
+get_interface_by_name(char *tunnel_name)
 {
     const struct ovsrec_interface *intf_row = NULL;
+    bool intf_found = false;
     OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
     {
         if (strcmp(intf_row->name, tunnel_name) == 0)
+        {
+            intf_found = true;
             break;
+        }
     }
-    return intf_row;
+    return (intf_found ? intf_row : NULL);
 }
 
-ovsrec_port *get_matching_port(char *tunnel_name)
+const struct ovsrec_port *
+get_port_by_name(char *tunnel_name)
 {
     const struct ovsrec_port *port_row = NULL;
+    bool port_found = false;
     OVSREC_PORT_FOR_EACH(port_row, idl)
     {
         if (strcmp(port_row->name, tunnel_name) == 0)
+        {
+            port_found = true;
             break;
+        }
     }
-    return port_row;
+    return (port_found ? port_row : NULL);
 }
 
-ovsrec_vlan *get_matching_vlan(char *tunnel_name)
+const struct ovsrec_vlan *
+get_vlan_by_name(char *vlan_name)
 {
     const struct ovsrec_vlan *vlan_row = NULL;
+    bool vlan_found = false;
     OVSREC_VLAN_FOR_EACH(vlan_row, idl)
     {
-        if (strcmp(vlan_row->name, tunnel_name) == 0)
+        if (strcmp(vlan_row->name, vlan_name) == 0)
+        {
+            vlan_found = true;
             break;
+        }
     }
-    return vlan_row;
+    return (vlan_found ? vlan_row : NULL);
 }
-*/
 
+const struct ovsrec_bridge *
+get_default_bridge()
+{
+    const struct ovsrec_bridge *br_row = NULL;
+    bool br_found = false;
+    OVSREC_BRIDGE_FOR_EACH(br_row, idl)
+    {
+        if (strcmp(br_row->name, DEFAULT_BRIDGE_NAME) == 0)
+        {
+            br_found = true;
+            break;
+        }
+    }
+    return (br_found ? br_row : NULL);
+}
 
+/*
 const struct ovsrec_logical_switch *
 check_vni_id(const struct ovsrec_logical_switch *logical_switch_row, int64_t vni_id)
 {
@@ -114,6 +182,7 @@ check_vni_id(const struct ovsrec_logical_switch *logical_switch_row, int64_t vni
 
     return NULL;
 }
+*/
 
 bool
 transaction_status(struct ovsdb_idl_txn *status_txn)
@@ -130,6 +199,175 @@ transaction_status(struct ovsdb_idl_txn *status_txn)
     }
 }
 
+const struct ovsrec_port *
+add_port_reference_in_bridge(struct ovsdb_idl_txn *tunnel_txn,
+                              char *tunnel_name,
+                              const struct ovsrec_bridge *default_bridge_row)
+{
+    struct ovsrec_port **ports = NULL;
+    const struct ovsrec_port *port_row = NULL;
+    int i=0;
+
+    port_row = ovsrec_port_insert(tunnel_txn);
+    ovsrec_port_set_name(port_row, tunnel_name);
+    ports = xmalloc(sizeof *default_bridge_row->ports *
+                   (default_bridge_row->n_ports + 1));
+    for (i = 0; i < default_bridge_row->n_ports; i++)
+        ports[i] = default_bridge_row->ports[i];
+
+    ports[default_bridge_row->n_ports] = CONST_CAST(struct ovsrec_port*, port_row);
+    ovsrec_bridge_set_ports(default_bridge_row, ports,
+                     default_bridge_row->n_ports + 1);
+    free(ports);
+
+    return port_row;
+}
+
+void
+add_interface_reference_in_port(struct ovsdb_idl_txn *tunnel_txn,
+                                 char *tunnel_name,
+                                 char *tunnel_mode,
+                                 const struct ovsrec_port *port_row)
+{
+    struct ovsrec_interface **interfaces = NULL;
+    const struct ovsrec_interface *intf_row = NULL;
+    int i=0;
+
+    intf_row = ovsrec_interface_insert(tunnel_txn);
+    ovsrec_interface_set_name(intf_row, tunnel_name);
+    ovsrec_interface_set_type(intf_row, tunnel_mode);
+
+    interfaces = xmalloc(sizeof *port_row->interfaces *
+                   (port_row->n_interfaces + 1));
+    for (i = 0; i < port_row->n_interfaces; i++)
+        interfaces[i] = port_row->interfaces[i];
+
+    interfaces[port_row->n_interfaces] =
+                    CONST_CAST(struct ovsrec_interface*, intf_row);
+    ovsrec_port_set_interfaces(port_row, interfaces,
+                    port_row->n_interfaces + 1);
+    free(interfaces);
+}
+
+void
+remove_port_reference_from_bridge(
+                        struct ovsdb_idl_txn *tunnel_txn,
+                        char *tunnel_name,
+                        const struct ovsrec_bridge *default_bridge_row)
+{
+    struct ovsrec_port **port_list = NULL;
+    const struct ovsrec_port *port_row = NULL;
+    int i = 0, j = 0;
+
+    port_list = xmalloc(sizeof *default_bridge_row->ports *
+                   (default_bridge_row->n_ports - 1));
+    for (i = 0, j = 0; i < default_bridge_row->n_ports; i++)
+    {
+        if(strcmp(default_bridge_row->ports[i]->name, tunnel_name) != 0)
+            port_list[j++] = default_bridge_row->ports[i];
+        else
+            port_row = default_bridge_row->ports[i];
+    }
+    ovsrec_bridge_set_ports(default_bridge_row, port_list,
+                     default_bridge_row->n_ports - 1);
+    ovsrec_port_delete(port_row);
+
+    free(port_list);
+}
+
+void
+remove_interface_reference_from_port(struct ovsdb_idl_txn *tunnel_txn,
+                                    char *tunnel_name,
+                                    const struct ovsrec_port *port_row)
+{
+    struct ovsrec_interface **interface_list = NULL;
+    struct ovsrec_interface *intf_row = NULL;
+    int i = 0, j = 0;
+
+    interface_list = xmalloc(sizeof *port_row->interfaces *
+                   (port_row->n_interfaces - 1));
+    for (i = 0, j = 0; i < port_row->n_interfaces; i++)
+    {
+        if(strcmp(port_row->interfaces[i]->name, tunnel_name) != 0)
+            interface_list[j++] = port_row->interfaces[i];
+        else
+            intf_row = port_row->interfaces[i];
+    }
+
+    ovsrec_port_set_interfaces(port_row, interface_list,
+                    port_row->n_interfaces - 1);
+    ovsrec_interface_delete(intf_row);
+
+    free(interface_list);
+}
+
+void
+add_vlan_to_vni_binding_in_port(
+                            const struct ovsrec_port *port_row,
+                            const struct ovsrec_vlan *vlan_row,
+                            const struct ovsrec_logical_switch *ls_row)
+{
+    struct ovsrec_vlan **vlan_list = NULL;
+    struct ovsrec_logical_switch **tunnel_key_list = NULL;
+    int i = 0;
+
+    vlan_list = xmalloc(sizeof *port_row->key_vlan_tunnel_keys *
+                   (port_row->n_vlan_tunnel_keys + 1));
+    for (i = 0; i < port_row->n_vlan_tunnel_keys; i++)
+        vlan_list[i] = port_row->key_vlan_tunnel_keys[i];
+
+    vlan_list[port_row->n_vlan_tunnel_keys] =
+        CONST_CAST(struct ovsrec_vlan*, vlan_row);
+
+    tunnel_key_list = xmalloc(sizeof *port_row->value_vlan_tunnel_keys *
+                   (port_row->n_vlan_tunnel_keys + 1));
+    for (i = 0; i < port_row->n_vlan_tunnel_keys; i++)
+        tunnel_key_list[i] = port_row->value_vlan_tunnel_keys[i];
+
+    tunnel_key_list[port_row->n_vlan_tunnel_keys] =
+        CONST_CAST(struct ovsrec_logical_switch*, ls_row);
+
+    ovsrec_port_set_vlan_tunnel_keys(port_row, vlan_list, tunnel_key_list,
+                                     (port_row->n_vlan_tunnel_keys + 1));
+
+    free(vlan_list);
+    free(tunnel_key_list);
+}
+
+void
+remove_vlan_to_vni_binding_in_port(
+                            const struct ovsrec_port *port_row,
+                            const struct ovsrec_vlan *vlan_row,
+                            const struct ovsrec_logical_switch *ls_row)
+{
+    struct ovsrec_vlan **vlans = NULL;
+    struct ovsrec_logical_switch **tunnel_keys = NULL;
+    int i = 0, j = 0;
+
+    vlans = xmalloc(sizeof *port_row->key_vlan_tunnel_keys *
+                   (port_row->n_vlan_tunnel_keys - 1));
+    tunnel_keys = xmalloc(sizeof *port_row->value_vlan_tunnel_keys *
+                   (port_row->n_vlan_tunnel_keys + 1));
+
+    for (i = 0, j = 0; i < port_row->n_vlan_tunnel_keys; i++)
+    {
+        if (strcmp(vlan_row->name, port_row->key_vlan_tunnel_keys[i]->name) == 0)
+            continue;
+        else
+        {
+            vlans[j++] = port_row->key_vlan_tunnel_keys[i];
+            tunnel_keys[j++] = port_row->value_vlan_tunnel_keys[i];
+        }
+    }
+
+    ovsrec_port_set_vlan_tunnel_keys(port_row, vlans, tunnel_keys,
+                                     port_row->n_vlan_tunnel_keys - 1);
+
+    free(vlans);
+    free(tunnel_keys);
+
+}
+
 DEFUN (cli_create_tunnel,
         cli_create_tunnel_cmd,
         "interface tunnel <1-99> {mode (vxlan|gre_ipv4)}",
@@ -138,72 +376,44 @@ DEFUN (cli_create_tunnel,
 {
     const struct ovsrec_interface *intf_row = NULL;
     const struct ovsrec_port *port_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
     const struct ovsrec_bridge *default_bridge_row = NULL;
-    const struct ovsrec_bridge *bridge_row = NULL;
-    int i=0;
-    struct ovsrec_interface **interfaces = NULL;
-    struct ovsrec_port **ports = NULL;
     char *tunnel_mode = NULL;
 
     tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
     memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
-
-    vty_out(vty, "argc %d %s", argc, VTY_NEWLINE);
-    for (i=0 ; i < argc; i++)
-        vty_out(vty, "argv[%d] %s %s", i, argv[i], VTY_NEWLINE);
-
     snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s%s","tunnel", argv[0]);
-    tunnel_name[MAX_TUNNEL_LENGTH] = '\0';
 
-    vty_out(vty, "tunnel_name %s %s", tunnel_name, VTY_NEWLINE);
+    VLOG_DBG("tunnel_name %s\n", tunnel_name);
 
     tunnel_mode = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
     memset(tunnel_mode, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    snprintf(tunnel_mode, MAX_TUNNEL_LENGTH, "%s", argv[1]);
 
-    if (argc == 2)
-        snprintf(tunnel_mode, MAX_TUNNEL_LENGTH, "%s", argv[1]);
-    vty_out(vty, "tunnel_mode %s %s", tunnel_mode, VTY_NEWLINE);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
+    if(!intf_row)
     {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
+        if(tunnel_mode == NULL)
         {
-            intf_found = true;
-            vty_out(vty, "Cannot create TUNNEL interface."
-                    "Specified interface already exists.%s", VTY_NEWLINE);
-            break;
+            vty_out(vty, "Please provide tunnel mode in order to create the"
+                         "tunnel %s", VTY_NEWLINE);
+            return CMD_ERR_INCOMPLETE;
         }
-    }
-
-    if(!intf_found)
-    {
-        if(tunnel_mode != NULL)
+        else
         {
             tunnel_txn = cli_do_config_start();
             if (tunnel_txn == NULL)
             {
-                VLOG_DBG("Transaction creation failed by %s. Function=%s, Line=%d",
+                VLOG_DBG("Transaction creation failed by %s. %s:%d",
                          " cli_do_config_start()", __func__, __LINE__);
                 cli_do_config_abort(tunnel_txn);
                 return CMD_OVSDB_FAILURE;
             }
 
-            /* Create an entry in the Port table */
-            port_row = ovsrec_port_insert(tunnel_txn);
-            ovsrec_port_set_name(port_row, tunnel_name);
-
-            vty_out(vty, "PORT set_name done %s", VTY_NEWLINE);
-            OVSREC_BRIDGE_FOR_EACH (bridge_row, idl)
-            {
-                if (strcmp(bridge_row->name, DEFAULT_BRIDGE_NAME) == 0) {
-                    default_bridge_row = bridge_row;
-                    break;
-                }
-            }
+            default_bridge_row = get_default_bridge();
 
             if(default_bridge_row == NULL)
             {
@@ -214,43 +424,28 @@ DEFUN (cli_create_tunnel,
                 return CMD_OVSDB_FAILURE;
             }
 
-            ports = xmalloc(sizeof *default_bridge_row->ports *
-                           (default_bridge_row->n_ports + 1));
-            for (i = 0; i < default_bridge_row->n_ports; i++)
-                ports[i] = default_bridge_row->ports[i];
+            /* Add port reference in the Bridge after adding new port */
+            port_row = add_port_reference_in_bridge(tunnel_txn,
+                                                    tunnel_name,
+                                                    default_bridge_row);
 
-            ports[default_bridge_row->n_ports] = CONST_CAST(struct ovsrec_port*, port_row);
-            ovsrec_bridge_set_ports(default_bridge_row, ports,
-                             default_bridge_row->n_ports + 1);
-            free(ports);
-
-            /* Create an entry in the Interface table */
-            intf_row = ovsrec_interface_insert(tunnel_txn);
-            ovsrec_interface_set_name(intf_row, tunnel_name);
-            ovsrec_interface_set_type(intf_row, tunnel_mode);
-
-            vty_out(vty, "Interface set_name done %s", VTY_NEWLINE);
-
-            interfaces = xmalloc(sizeof *port_row->interfaces *
-                           (port_row->n_interfaces + 1));
-            for (i = 0; i < port_row->n_interfaces; i++)
-                interfaces[i] = port_row->interfaces[i];
-
-            interfaces[port_row->n_interfaces] =
-                            CONST_CAST(struct ovsrec_interface*, intf_row);
-            ovsrec_port_set_interfaces(port_row, interfaces,
-                            port_row->n_interfaces + 1);
-            free(interfaces);
+            /*
+             * Add interface reference in the Port after adding new
+             * interface.
+             */
+            add_interface_reference_in_port(tunnel_txn,
+                                            tunnel_name,
+                                            tunnel_mode,
+                                            port_row);
 
             status_txn = cli_do_config_finish(tunnel_txn);
-            if(strcmp(tunnel_mode, "vxlan") == 0)
+
+            if(strcmp(tunnel_mode, OVSREC_INTERFACE_TYPE_VXLAN) == 0)
             {
                 if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
                 {
-                    vty_out(vty, "TXN committed %s", VTY_NEWLINE);
                     vty->node = VXLAN_TUNNEL_INTERFACE_NODE;
                     vty->index = (void *)tunnel_name;
-                    vty_out(vty, "tunnel_name %s vty->index %s %s", tunnel_name, (char *)vty->index, VTY_NEWLINE);
                     return CMD_SUCCESS;
                 }
                 else
@@ -258,6 +453,7 @@ DEFUN (cli_create_tunnel,
                     VLOG_ERR("Transaction commit failed in function=%s, line=%d",__func__,__LINE__);
                     return CMD_OVSDB_FAILURE;
                 }
+
             }
             else
             {
@@ -266,34 +462,30 @@ DEFUN (cli_create_tunnel,
                 return CMD_WARNING;
             }
         }
-        else
-        {
-            vty_out(vty, "Please provide tunnel mode in order to create the"
-                         "tunnel %s", VTY_NEWLINE);
-            return CMD_ERR_INCOMPLETE;
-        }
     }
     else
     {
-        if (argc > 1)
+        if(argv[1] == NULL)
         {
-            vty_out(vty, "Tunnel %s already exists... Please don't provide"
-                          "tunnel mode %s", tunnel_name, VTY_NEWLINE);
-
-            if (strcmp(tunnel_mode, "vxlan") == 0)
+            snprintf(tunnel_mode, MAX_TUNNEL_LENGTH, "%s", intf_row->type);
+            if(strcmp(tunnel_mode, OVSREC_INTERFACE_TYPE_VXLAN) == 0)
             {
-                vty_out(vty, "Interface exists!! %s", VTY_NEWLINE);
                 vty->node = VXLAN_TUNNEL_INTERFACE_NODE;
                 vty->index = (void *)tunnel_name;
-                vty_out(vty, "tunnel_name %s vty->index %s %s", tunnel_name, (char *)vty->index, VTY_NEWLINE);
             }
+        /*
+            else
+            {
+                // GRE TODO
+            }
+        */
         }
-/*
         else
         {
-            // GRE TODO
+            vty_out(vty, "Tunnel %s already exists...Please don't provide "
+                    "tunnel mode %s", tunnel_name, VTY_NEWLINE);
+            return CMD_WARNING;
         }
-*/
     }
 
     return CMD_SUCCESS;
@@ -301,10 +493,73 @@ DEFUN (cli_create_tunnel,
 
 DEFUN (cli_delete_tunnel,
         cli_delete_tunnel_cmd,
-        "no interface TUNNEL_INTF TUNNEL_INTF_NUMBER",
+        "no interface tunnel <1-99>",
         TUNNEL_STR
         "Delate a tunnel interface\n")
 {
+    const struct ovsrec_bridge *default_bridge_row = NULL;
+    const struct ovsrec_interface *intf_row = NULL;
+    const struct ovsrec_port *port_row = NULL;
+    struct ovsdb_idl_txn *tunnel_txn = NULL;
+    enum ovsdb_idl_txn_status status_txn;
+    char *tunnel_name = NULL;
+
+    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
+    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s%s","tunnel", argv[0]);
+
+    VLOG_DBG("tunnel_name %s\n", tunnel_name);
+
+    intf_row = get_interface_by_name(tunnel_name);
+    port_row = get_port_by_name(tunnel_name);
+
+    if(intf_row)
+    {
+        tunnel_txn = cli_do_config_start();
+        if (tunnel_txn == NULL)
+        {
+            VLOG_DBG("Transaction creation failed by %s. Function=%s, Line=%d",
+                     " cli_do_config_start()", __func__, __LINE__);
+            cli_do_config_abort(tunnel_txn);
+            return CMD_OVSDB_FAILURE;
+        }
+
+        default_bridge_row = get_default_bridge();
+
+        if(default_bridge_row == NULL)
+        {
+            assert(0);
+            VLOG_DBG("Couldn't fetch default Bridge row. %s:%d",
+                    __func__, __LINE__);
+            cli_do_config_abort(tunnel_txn);
+            return CMD_OVSDB_FAILURE;
+        }
+
+        /* Remove a port reference in the Bridge after adding new port */
+        remove_port_reference_from_bridge(tunnel_txn,
+                                          tunnel_name,
+                                          default_bridge_row);
+
+        /*
+         * Remove an interface reference in the Port after adding new
+         * interface.
+         */
+        remove_interface_reference_from_port(tunnel_txn,
+                                             tunnel_name,
+                                             port_row);
+
+
+        status_txn = cli_do_config_finish(tunnel_txn);
+        if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
+            return CMD_SUCCESS;
+    }
+    else
+    {
+        vty_out(vty, "Can't delete tunnel %s as it doesn't exist %s",
+                tunnel_name, VTY_NEWLINE);
+        return CMD_WARNING;
+    }
+
     return CMD_SUCCESS;
 }
 
@@ -315,29 +570,20 @@ DEFUN (cli_set_tunnel_ip,
         "Set the tunnel ip\n")
 {
     const struct ovsrec_port *port_row = NULL;
-    bool port_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    port_row = get_port_by_name(tunnel_name);
 
-
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
-
-    OVSREC_PORT_FOR_EACH(port_row, idl)
+    if(port_row)
     {
-        if (strcmp(port_row->name, tunnel_name) == 0)
+        if (!string_is_an_ip_address(argv[0]))
         {
-            vty_out(vty, "Port found! %s %s", port_row->name, VTY_NEWLINE);
-            port_found = true;
-            break;
+            vty_out(vty, "%% Malformed IPv4 address %s", VTY_NEWLINE);
+            return CMD_WARNING;
         }
-    }
-
-    if(port_found)
-    {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
         {
@@ -369,26 +615,14 @@ DEFUN (cli_no_set_tunnel_ip,
         "Remove the tunnel ip\n")
 {
     const struct ovsrec_port *port_row = NULL;
-    bool port_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    port_row = get_port_by_name(tunnel_name);
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
-
-    OVSREC_PORT_FOR_EACH(port_row, idl)
-    {
-        if (strcmp(port_row->name, tunnel_name) == 0)
-        {
-            port_found = true;
-            break;
-        }
-    }
-
-    if(port_found)
+    if(port_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -422,35 +656,23 @@ DEFUN (cli_set_source_intf_ip,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
+    const struct ovsrec_interface *intf_loopback_row = NULL;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
     char *src_intf_name = NULL;
     const char *src_ip = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    src_intf_name = get_source_interface_name(CONST_CAST(char *, argv[0]));
 
-    src_intf_name = xmalloc(MAX_INTF_LENGTH * sizeof(char));
-    memset(src_intf_name, 0, MAX_INTF_LENGTH * sizeof(char));
-
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
-    snprintf(src_intf_name, MAX_INTF_LENGTH, "%s%s","loopback", argv[0]);
-
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            intf_found = true;
-            break;
-        }
-    }
+    intf_row = get_interface_by_name(tunnel_name);
+    intf_loopback_row = get_interface_by_name(src_intf_name);
 
     src_ip = smap_get(&intf_row->options,
                       OVSREC_INTERFACE_OPTIONS_TUNNEL_SOURCE_IP);
 
-    vty_out(vty, "Source IP %s %s", src_ip, VTY_NEWLINE);
+    VLOG_DBG("Source IP is %s\n", src_ip);
     if(src_ip != NULL)
     {
         vty_out(vty, "Source IP %s is already set for given tunnel!! %s",
@@ -458,8 +680,15 @@ DEFUN (cli_set_source_intf_ip,
         return CMD_SUCCESS;
     }
 
-    if(intf_found)
+    if(intf_row)
     {
+        if(!intf_loopback_row)
+        {
+            vty_out(vty, "Can't configure source interface. %s "
+                    "doesn't exists %s", src_intf_name, VTY_NEWLINE);
+            return CMD_WARNING;
+
+        }
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
         {
@@ -496,27 +725,28 @@ DEFUN (cli_no_set_source_intf_ip,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
+    const struct ovsrec_interface *intf_loopback_row = NULL;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
+    char *src_intf_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    src_intf_name = get_source_interface_name(CONST_CAST(char *, argv[0]));
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
+    intf_loopback_row = get_interface_by_name(src_intf_name);
+
+    if(intf_row)
     {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
+        if(!intf_loopback_row)
         {
-            intf_found = true;
-            break;
-        }
-    }
+            vty_out(vty, "Can't remove the source interface as given loopback "
+                    "%s doesn't exist %s", argv[0], VTY_NEWLINE);
+            return CMD_WARNING;
 
-    if(intf_found)
-    {
+        }
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
         {
@@ -552,27 +782,13 @@ DEFUN (cli_set_source_ip,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
     const char *src_intf = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
-
-    vty_out(vty, "Set source ip %s %s %s",(char *)vty->index, argv[0], VTY_NEWLINE);
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
-
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            intf_found = true;
-            break;
-        }
-    }
-
+    tunnel_name = (char *)vty->index;
+    intf_row = get_interface_by_name(tunnel_name);
     src_intf = smap_get(&intf_row->options, OVSREC_INTERFACE_OPTIONS_TUNNEL_SOURCE_INTF);
 
     if(src_intf != NULL)
@@ -582,7 +798,7 @@ DEFUN (cli_set_source_ip,
         return CMD_SUCCESS;
     }
 
-    if(intf_found)
+    if(intf_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -619,26 +835,15 @@ DEFUN (cli_no_set_source_ip,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            intf_found = true;
-            break;
-        }
-    }
-
-    if(intf_found)
+    if(intf_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -675,26 +880,15 @@ DEFUN (cli_set_dest_ip,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            intf_found = true;
-            break;
-        }
-    }
-
-    if(intf_found)
+    if(intf_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -732,26 +926,15 @@ DEFUN (cli_no_set_dest_ip,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            intf_found = true;
-            break;
-        }
-    }
-
-    if(intf_found)
+    if(intf_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -803,7 +986,7 @@ set_vxlan_tunnel_key(int64_t vni_id)
 
     bridge_row = ovsrec_bridge_first(idl);
 
-    if (!(check_vni_id(logical_switch_row, vni_id)))
+    if (!(get_logical_switch_by_vni(vni_id)))
     {
         logical_switch_row = ovsrec_logical_switch_insert(status_txn);
 
@@ -847,7 +1030,7 @@ no_set_vxlan_tunnel_key(int64_t vni_id)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+    logical_switch_row = get_logical_switch_by_vni(vni_id);
     if (logical_switch_row)
         if(logical_switch_row->tunnel_key == vni_id)
         {
@@ -895,7 +1078,7 @@ set_vxlan_tunnel_name(const char *name)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+    logical_switch_row = get_logical_switch_by_vni(vni_id);
     if (logical_switch_row)
     {
         ovsrec_logical_switch_set_name(logical_switch_row, name);
@@ -938,7 +1121,7 @@ unset_vxlan_tunnel_name(const char *name)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+    logical_switch_row = get_logical_switch_by_vni(vni_id);
     if (logical_switch_row)
     {
         if (logical_switch_row->name)
@@ -986,7 +1169,7 @@ set_vxlan_tunnel_description(const char *desc)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, (int64_t)vty->index);
+    logical_switch_row = get_logical_switch_by_vni((int64_t)vty->index);
     if (logical_switch_row)
         ovsrec_logical_switch_set_description(logical_switch_row, desc);
     else
@@ -1027,7 +1210,7 @@ unset_vxlan_tunnel_description(const char *description)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+    logical_switch_row = get_logical_switch_by_vni(vni_id);
     if (logical_switch_row)
     {
         if (logical_switch_row->description)
@@ -1073,7 +1256,7 @@ set_mcast_group_ip(const char *mcast_ip)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, (int64_t)vty->index);
+    logical_switch_row = get_logical_switch_by_vni((int64_t)vty->index);
     if (logical_switch_row)
         ovsrec_logical_switch_set_mcast_group_ip(logical_switch_row, mcast_ip);
     else
@@ -1113,7 +1296,7 @@ unset_vxlan_tunnel_mcast_group_ip(const char *mcast_ip)
         return CMD_OVSDB_FAILURE;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+    logical_switch_row = get_logical_switch_by_vni(vni_id);
     if (logical_switch_row)
     {
         if (logical_switch_row->mcast_group_ip)
@@ -1177,55 +1360,19 @@ DEFUN (cli_set_vlan_to_vni_mapping,
     const struct ovsrec_port *port_row = NULL;
     const struct ovsrec_vlan *vlan_row = NULL;
     const struct ovsrec_logical_switch *ls_row = NULL;
-    bool port_found = false;
-    bool ls_found = false;
-    bool vlan_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
-    struct ovsrec_vlan **vlan_list = NULL;
-    struct ovsrec_logical_switch **tunnel_key_list = NULL;
-    int i = 0;
     char *tunnel_name = NULL;
     char *vlan_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
-    vlan_name = xmalloc(MAX_VLAN_LENGTH * sizeof(char));
-    memset(vlan_name, 0, MAX_VLAN_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    vlan_name = get_vlan_name(CONST_CAST(char *, argv[0]));
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
-    snprintf(vlan_name, MAX_VLAN_LENGTH, "%s%s","vlan", argv[0]);
+    port_row = get_port_by_name(tunnel_name);
+    ls_row = get_logical_switch_by_vni((int64_t)atoi(argv[1]));
+    vlan_row = get_vlan_by_name(vlan_name);
 
-    vty_out(vty, "tunnel_name %s vlan_name %s %s", tunnel_name, vlan_name, VTY_NEWLINE);
-    OVSREC_PORT_FOR_EACH(port_row, idl)
-    {
-        if (strcmp(port_row->name, tunnel_name) == 0)
-        {
-            vty_out(vty, "Port found %s", VTY_NEWLINE);
-            port_found = true;
-            break;
-        }
-    }
-
-    OVSREC_LOGICAL_SWITCH_FOR_EACH(ls_row, idl)
-    {
-        if (ls_row->tunnel_key == (int64_t)atoi(argv[1]))
-        {
-            vty_out(vty, "LS found %s", VTY_NEWLINE);
-            ls_found = true;
-            break;
-        }
-    }
-    OVSREC_VLAN_FOR_EACH(vlan_row, idl)
-    {
-        if (strcasecmp(vlan_row->name, vlan_name) == 0)
-        {
-            vty_out(vty, "Vlan found %s", VTY_NEWLINE);
-            vlan_found = true;
-            break;
-        }
-    }
-    if(port_found && ls_found && vlan_found)
+    if(port_row && ls_row && vlan_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -1236,40 +1383,10 @@ DEFUN (cli_set_vlan_to_vni_mapping,
             return CMD_OVSDB_FAILURE;
         }
 
-        vlan_list = xmalloc((sizeof(*port_row->key_vlan_tunnel_keys) *
-                       (port_row->n_vlan_tunnel_keys + 1)));
-        for (i = 0; i < port_row->n_vlan_tunnel_keys; i++)
-            vlan_list[i] = port_row->key_vlan_tunnel_keys[i];
-
-        vlan_list[port_row->n_vlan_tunnel_keys] =
-            CONST_CAST(struct ovsrec_vlan*, vlan_row);
-
-        vty_out(vty, "i %d port_row->n_vlan_tunnel_keys %ld after vlan update %s",
-                i, port_row->n_vlan_tunnel_keys, VTY_NEWLINE);
-        vty_out(vty, "Vlan_name %s vlan_list %s %s", vlan_row->name,
-                vlan_list[0]->name, VTY_NEWLINE);
-
-        tunnel_key_list = xmalloc(sizeof (*port_row->value_vlan_tunnel_keys) *
-                       (port_row->n_vlan_tunnel_keys + 1));
-        for (i = 0; i < port_row->n_vlan_tunnel_keys; i++)
-            tunnel_key_list[i] = port_row->value_vlan_tunnel_keys[i];
-
-        tunnel_key_list[port_row->n_vlan_tunnel_keys] =
-            CONST_CAST(struct ovsrec_logical_switch*, ls_row);
-
-        vty_out(vty, "i %d port_row->n_vlan_tunnel_keys %ld after logical sw update %s",
-                i, port_row->n_vlan_tunnel_keys, VTY_NEWLINE);
-
-        vty_out(vty, "tunnel_key %ld tunnel_key_list %ld %s", ls_row->tunnel_key,
-                tunnel_key_list[0]->tunnel_key, VTY_NEWLINE);
-        ovsrec_port_set_vlan_tunnel_keys(port_row, vlan_list, tunnel_key_list,
-                                         (port_row->n_vlan_tunnel_keys + 1));
-
+        /* Add vlan_to_vni binding in port */
+        add_vlan_to_vni_binding_in_port(port_row, vlan_row, ls_row);
 
         status_txn = cli_do_config_finish(tunnel_txn);
-
-        free(vlan_list);
-        free(tunnel_key_list);
 
         if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
             return CMD_SUCCESS;
@@ -1292,52 +1409,19 @@ DEFUN (cli_no_set_vlan_to_vni_mapping,
     const struct ovsrec_port *port_row = NULL;
     const struct ovsrec_vlan *vlan_row = NULL;
     const struct ovsrec_logical_switch *ls_row = NULL;
-    bool port_found = false;
-    bool ls_found = false;
-    bool vlan_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
-    struct ovsrec_vlan **vlans = NULL;
-    struct ovsrec_logical_switch **tunnel_keys = NULL;
-    int i = 0, j = 0;
-
     char *tunnel_name = NULL;
     char *vlan_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
-    vlan_name = xmalloc(MAX_VLAN_LENGTH * sizeof(char));
-    memset(vlan_name, 0, MAX_VLAN_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    vlan_name = get_vlan_name(CONST_CAST(char *, argv[0]));
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
-    snprintf(vlan_name, MAX_VLAN_LENGTH, "%s%s", "vlan", argv[0]);
+    port_row = get_port_by_name(tunnel_name);
+    ls_row = get_logical_switch_by_vni((int64_t)atoi(argv[1]));
+    vlan_row = get_vlan_by_name(vlan_name);
 
-    OVSREC_PORT_FOR_EACH(port_row, idl)
-    {
-        if (strcmp(port_row->name, tunnel_name) == 0)
-        {
-            port_found = true;
-            break;
-        }
-    }
-
-    OVSREC_LOGICAL_SWITCH_FOR_EACH(ls_row, idl)
-    {
-        if ((int)ls_row->tunnel_key == atoi(argv[1]))
-        {
-            ls_found = true;
-            break;
-        }
-    }
-    OVSREC_VLAN_FOR_EACH(vlan_row, idl)
-    {
-        if (strcasecmp(vlan_row->name, vlan_name) == 0)
-        {
-            vlan_found = true;
-            break;
-        }
-    }
-    if(port_found && ls_found && vlan_found)
+    if(port_row && ls_row && vlan_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -1348,29 +1432,10 @@ DEFUN (cli_no_set_vlan_to_vni_mapping,
             return CMD_OVSDB_FAILURE;
         }
 
-        vlans = xmalloc(sizeof *port_row->key_vlan_tunnel_keys *
-                       (port_row->n_vlan_tunnel_keys - 1));
-        tunnel_keys = xmalloc(sizeof *port_row->value_vlan_tunnel_keys *
-                       (port_row->n_vlan_tunnel_keys + 1));
-
-        for (i = 0, j = 0; i < port_row->n_vlan_tunnel_keys; i++)
-        {
-            if (strcmp(vlan_row->name, port_row->key_vlan_tunnel_keys[i]->name) == 0)
-                continue;
-            else
-            {
-                vlans[j++] = port_row->key_vlan_tunnel_keys[i];
-                tunnel_keys[j++] = port_row->value_vlan_tunnel_keys[i];
-            }
-        }
-
-        ovsrec_port_set_vlan_tunnel_keys(port_row, vlans, tunnel_keys,
-                                         port_row->n_vlan_tunnel_keys - 1);
+        /* Remove vlan_to_vni binding in port */
+        remove_vlan_to_vni_binding_in_port(port_row, vlan_row, ls_row);
 
         status_txn = cli_do_config_finish(tunnel_txn);
-
-        free(vlans);
-        free(tunnel_keys);
 
         if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
             return CMD_SUCCESS;
@@ -1418,7 +1483,7 @@ set_global_vlan_to_vni_mapping(int argc, const char **argv)
 
     if (vlan_found)
     {
-        logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+        logical_switch_row = get_logical_switch_by_vni(vni_id);
         if (logical_switch_row)
             ovsrec_vlan_set_tunnel_key(vlan_row, logical_switch_row);
         else
@@ -1468,7 +1533,7 @@ unset_global_vlan_to_vni_mapping(int argc, const char **argv)
         return CMD_SUCCESS;
     }
 
-    logical_switch_row = check_vni_id(logical_switch_row, vni_id);
+    logical_switch_row = get_logical_switch_by_vni(vni_id);
     if (logical_switch_row)
     {
         OVSREC_VLAN_FOR_EACH(vlan_row, idl)
@@ -1517,28 +1582,15 @@ DEFUN (cli_set_vxlan_udp_port,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    vty_out(vty, "UDP-Port %s %s", argv[0], VTY_NEWLINE);
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            vty_out(vty, "Interface %s %s", tunnel_name, VTY_NEWLINE);
-            intf_found = true;
-            break;
-        }
-    }
-
-    if(intf_found)
+    if(intf_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -1556,7 +1608,6 @@ DEFUN (cli_set_vxlan_udp_port,
         smap_destroy(&options);
 
         status_txn = cli_do_config_finish(tunnel_txn);
-        vty_out(vty, "status_txn %d TXN_COMMITED %s", status_txn, VTY_NEWLINE);
         if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
             return CMD_SUCCESS;
     }
@@ -1577,26 +1628,15 @@ DEFUN (cli_no_set_vxlan_udp_port,
 {
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
-    {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
-        {
-            intf_found = true;
-            break;
-        }
-    }
-
-    if(intf_found)
+    if(intf_row)
     {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
@@ -1628,34 +1668,35 @@ DEFUN (cli_no_set_vxlan_udp_port,
 
 DEFUN (cli_set_vni_list,
         cli_set_vni_list_cmd,
-        "vni {vni_id1 vni_id2 ... vni_idn}",
+        "vxlan-vni <1-8000>",
         TUNNEL_STR
         "Set the list of VNIs used by an interface\n")
 {
-/*
     struct smap options = SMAP_INITIALIZER(&options);
     const struct ovsrec_interface *intf_row = NULL;
-    bool intf_found = false;
+    const struct ovsrec_logical_switch *ls_row = NULL;
     struct ovsdb_idl_txn *tunnel_txn = NULL;
     enum ovsdb_idl_txn_status status_txn;
     char *tunnel_name = NULL;
+    char *new_vni_list = NULL;
+    const char *cur_vni_list = NULL;
+    int64_t ls_tunnel_key = 0;
 
-    tunnel_name = xmalloc(MAX_TUNNEL_LENGTH * sizeof(char));
-    memset(tunnel_name, 0, MAX_TUNNEL_LENGTH * sizeof(char));
+    tunnel_name = (char *)vty->index;
+    ls_tunnel_key = (int64_t) atoi(argv[0]);
 
-    snprintf(tunnel_name, MAX_TUNNEL_LENGTH, "%s", (char *)vty->index);
+    intf_row = get_interface_by_name(tunnel_name);
+    ls_row = get_logical_switch_by_vni(ls_tunnel_key);
 
-    OVSREC_INTERFACE_FOR_EACH(intf_row, idl)
+    if(intf_row)
     {
-        if (strcmp(intf_row->name, tunnel_name) == 0)
+        if(!ls_row)
         {
-            intf_found = true;
-            break;
+            vty_out(vty, "Can't add vni to vni_list as given tunnel_key %ld "
+                    "doesn't exist %s", ls_tunnel_key, VTY_NEWLINE);
+            return CMD_WARNING;
         }
-    }
 
-    if(intf_found)
-    {
         tunnel_txn = cli_do_config_start();
         if (tunnel_txn == NULL)
         {
@@ -1665,12 +1706,27 @@ DEFUN (cli_set_vni_list,
             return CMD_OVSDB_FAILURE;
         }
 
+        cur_vni_list = smap_get(&intf_row->options, OVSREC_INTERFACE_OPTIONS_VNI_LIST);
+
+        new_vni_list = xmalloc(sizeof(int64_t) * sizeof(char) * 8000);
+        memset(new_vni_list, 0, (sizeof(int64_t) * sizeof(char) * 8000));
+
+        if(cur_vni_list != NULL)
+        {
+            strcpy(new_vni_list, cur_vni_list);
+            strcat(new_vni_list, " ");
+            strcat(new_vni_list, argv[0]);
+        }
+        else
+            strcpy(new_vni_list, argv[0]);
+
+        new_vni_list[strlen(new_vni_list)] = '\0';
         smap_clone(&options, &intf_row->options);
         smap_replace(&options, OVSREC_INTERFACE_OPTIONS_VNI_LIST,
-                    argv[0]);
-        smap_add(&options, "vxlan_udp_port", "4789");
+                    new_vni_list);
         ovsrec_interface_set_options(intf_row, &options);
         smap_destroy(&options);
+        free(new_vni_list);
 
         status_txn = cli_do_config_finish(tunnel_txn);
         if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
@@ -1682,62 +1738,95 @@ DEFUN (cli_set_vni_list,
                     "Specified tunnel interface doesn't exist%s", VTY_NEWLINE);
         return CMD_OVSDB_FAILURE;
     }
-*/
     return CMD_SUCCESS;
 }
 
 DEFUN (cli_no_set_vni_list,
         cli_no_set_vni_list_cmd,
-        "vni {vni_id1 vni_id2 ... vni_idn}",
+        "no vxlan-vni <1-8000>",
         TUNNEL_STR
-        "Set the list of VNIs used by an interface\n")
+        "Remove the vni from tunnel interface\n")
 {
+    struct smap options = SMAP_INITIALIZER(&options);
+    const struct ovsrec_interface *intf_row = NULL;
+    const struct ovsrec_logical_switch *ls_row = NULL;
+    struct ovsdb_idl_txn *tunnel_txn = NULL;
+    enum ovsdb_idl_txn_status status_txn;
+    char *tunnel_name = NULL;
+    char *new_vni_list = NULL;
+    char *temp_vni_list = NULL;
+    const char *cur_vni_list = NULL;
+    char *vni_str = NULL;
+    int64_t ls_tunnel_key = 0;
+
+    tunnel_name = (char *)vty->index;
+    ls_tunnel_key = (int64_t) atoi(argv[0]);
+
+    intf_row = get_interface_by_name(tunnel_name);
+    ls_row = get_logical_switch_by_vni(ls_tunnel_key);
+
+    if(intf_row)
+    {
+        if(!ls_row)
+        {
+            vty_out(vty, "Can't delete vni from the vni_list as given "
+                    "tunnel_key %ld doesn't exist %s", ls_tunnel_key,
+                    VTY_NEWLINE);
+            return CMD_WARNING;
+        }
+        tunnel_txn = cli_do_config_start();
+        if (tunnel_txn == NULL)
+        {
+            VLOG_DBG("Transaction creation failed by %s. Function=%s, Line=%d",
+                     " cli_do_config_start()", __func__, __LINE__);
+            cli_do_config_abort(tunnel_txn);
+            return CMD_OVSDB_FAILURE;
+        }
+
+        cur_vni_list = smap_get(&intf_row->options, OVSREC_INTERFACE_OPTIONS_VNI_LIST);
+
+        new_vni_list = xmalloc(sizeof(int64_t) * sizeof(char) * 8000);
+        memset(new_vni_list, 0, (sizeof(int64_t) * sizeof(char) * 8000));
+
+        temp_vni_list = CONST_CAST(char *, cur_vni_list);
+        temp_vni_list[strlen(cur_vni_list)] = '\0';
+        if(cur_vni_list != NULL)
+        {
+            vni_str = strtok(temp_vni_list, " ");
+            if (strcmp(vni_str, argv[0]) != 0)
+                strcpy(new_vni_list, vni_str);
+            while((vni_str = strtok(NULL, " ")) != NULL)
+            {
+                if (strcmp(vni_str, argv[0]) != 0)
+                {
+                    strcat(new_vni_list, vni_str);
+                    strcat(new_vni_list, " ");
+                }
+            }
+        }
+        new_vni_list[strlen(new_vni_list)] = '\0';
+
+        smap_clone(&options, &intf_row->options);
+        smap_replace(&options, OVSREC_INTERFACE_OPTIONS_VNI_LIST,
+                    new_vni_list);
+        ovsrec_interface_set_options(intf_row, &options);
+        smap_destroy(&options);
+        free(new_vni_list);
+
+        status_txn = cli_do_config_finish(tunnel_txn);
+        if(status_txn == TXN_SUCCESS || status_txn == TXN_UNCHANGED)
+            return CMD_SUCCESS;
+    }
+    else
+    {
+        vty_out(vty, "Cannot modify tunnel destination ip."
+                    "Specified tunnel interface doesn't exist%s", VTY_NEWLINE);
+        return CMD_OVSDB_FAILURE;
+    }
     return CMD_SUCCESS;
 }
 
-DEFUN (cli_show_vxlan_intf,
-        cli_show_vxlan_intf_cmd,
-        "show interface vxlan {TUNNEL_INTF TUNNEL_INTF_NUMBER | VTEP}",
-        TUNNEL_STR
-        "Show tunnel interface info\n")
-{
-
-    return CMD_SUCCESS;
-}
-
-DEFUN (cli_show_vxlan_vni,
-        cli_show_vxlan_vni_cmd,
-        "show vni {TUNNEL_KEY}",
-        TUNNEL_STR
-        "Show vxlan tunnel info\n")
-{
-
-    return CMD_SUCCESS;
-}
-
-DEFUN (cli_show_vxlan_mac_table,
-        cli_show_vxlan_mac_table_cmd,
-        "show vxlan mac-table {FROM | MAC_ADDR | VLANS | REMOTE_VTEP}",
-        TUNNEL_STR
-        "Show vxlan tunnel info\n")
-{
-
-    return CMD_SUCCESS;
-}
-
-DEFUN (cli_show_vxlan_statistics,
-        cli_show_vxlan_statistics_cmd,
-        "show vxlan statistics",
-        TUNNEL_STR
-        "Show vxlan tunnel statistics info\n")
-{
-
-    return CMD_SUCCESS;
-}
-
-
-/*================================================================================================*/
-
+/* ovsdb table initialization */
 static void
 tunnel_ovsdb_init()
 {
@@ -1746,6 +1835,7 @@ tunnel_ovsdb_init()
     ovsdb_idl_add_column(idl, &ovsrec_port_col_interfaces);
     ovsdb_idl_add_column(idl, &ovsrec_port_col_ip4_address);
     ovsdb_idl_add_column(idl, &ovsrec_port_col_ip4_address_secondary);
+    ovsdb_idl_add_column(idl, &ovsrec_port_col_vlan_tunnel_keys);
 
     ovsdb_idl_add_table(idl, &ovsrec_table_logical_switch);
     ovsdb_idl_add_column(idl, &ovsrec_logical_switch_col_tunnel_key);
@@ -1782,15 +1872,13 @@ cli_post_init(void)
 {
     vtysh_ret_val retval = e_vtysh_error;
 
+    /* Installing global vni commands */
+    install_element(CONFIG_NODE, &cli_set_global_vlan_to_vni_mapping_cmd);
+    install_element(CONFIG_NODE, &cli_no_set_global_vlan_to_vni_mapping_cmd);
+
     /* Installing interface vxlan related commands */
     install_element(CONFIG_NODE, &cli_create_tunnel_cmd);
     install_element(CONFIG_NODE, &cli_delete_tunnel_cmd);
-    install_element(CONFIG_NODE, &cli_show_vxlan_intf_cmd);
-    install_element(CONFIG_NODE, &cli_show_vxlan_vni_cmd);
-    install_element(CONFIG_NODE, &cli_show_vxlan_mac_table_cmd);
-    install_element(CONFIG_NODE, &cli_show_vxlan_statistics_cmd);
-    install_element(CONFIG_NODE, &cli_set_global_vlan_to_vni_mapping_cmd);
-    install_element(CONFIG_NODE, &cli_no_set_global_vlan_to_vni_mapping_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_tunnel_ip_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_no_set_tunnel_ip_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_source_intf_ip_cmd);
@@ -1799,8 +1887,6 @@ cli_post_init(void)
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_no_set_source_ip_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_dest_ip_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_no_set_dest_ip_cmd);
-    install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_vxlan_tunnel_key_cmd);
-    install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_no_set_vxlan_tunnel_key_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_vlan_to_vni_mapping_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_no_set_vlan_to_vni_mapping_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_vxlan_udp_port_cmd);
@@ -1808,7 +1894,6 @@ cli_post_init(void)
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_set_vni_list_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &cli_no_set_vni_list_cmd);
     install_element(VXLAN_TUNNEL_INTERFACE_NODE, &vtysh_exit_tunnel_interface_cmd);
-    //install_element (VXLAN_TUNNEL_INTERFACE_NODE, &vtysh_quit_tunnel_interface_cmd);
     install_element (VXLAN_TUNNEL_INTERFACE_NODE, &vtysh_end_all_cmd);
 
     /* Installing vni related commands */
@@ -1823,7 +1908,6 @@ cli_post_init(void)
     install_element(VNI_NODE, &cli_set_replication_group_ips_cmd);
     install_element(VNI_NODE, &cli_no_set_replication_group_ips_cmd);
     install_element(VNI_NODE, &vtysh_exit_vni_cmd);
-    //install_element(VNI_NODE, &vtysh_quit_vni_cmd);
     install_element (VNI_NODE, &vtysh_end_all_cmd);
 
     /* Installing running config sub-context with global config context */
@@ -1846,8 +1930,7 @@ cli_post_init(void)
     if(e_vtysh_ok != retval)
     {
         vtysh_ovsdb_config_logmsg(VTYSH_OVSDB_CONFIG_ERR,
-                           "config context unable to add tunnel interface client callback");
+            "config context unable to add tunnel interface client callback");
         assert(0);
     }
-
 }

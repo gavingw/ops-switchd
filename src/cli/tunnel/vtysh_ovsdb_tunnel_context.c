@@ -159,11 +159,12 @@ vtysh_tunnel_intf_context_clientcallback(void *p_private)
             }
 
             if (port_found)
-            {
-                port_found = false;
-                vtysh_ovsdb_cli_print(p_msg, "%4s %s %s", "", "ip address",
-                                      port_row->ip4_address);
-            }
+                if (port_row->ip4_address)
+                {
+                    port_found = false;
+                    vtysh_ovsdb_cli_print(p_msg, "%4s %s %s", "", "ip address",
+                                          port_row->ip4_address);
+                }
 
             udp_port = smap_get(&ifrow->options,
                                 OVSREC_INTERFACE_OPTIONS_VXLAN_UDP_PORT);
